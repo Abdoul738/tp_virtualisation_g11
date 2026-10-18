@@ -1,0 +1,6 @@
+*.sh text eol=lf
+Vagrantfile text eol=lf
+* text=auto eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.json text eol=lf

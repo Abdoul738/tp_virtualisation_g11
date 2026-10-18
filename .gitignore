@@ -1,0 +1,6 @@
+.vagrant/
+.env
+config/noeuds.yml
+config/plateforme.env
+__pycache__/
+*.pyc

@@ -5,74 +5,110 @@
 # configures the configuration version (we support older styles for
 # backwards compatibility). Please don't change it unless you know what
 # you're doing.
+
+# =============================================================================
+require 'yaml'        # pour écrire la table NOEUDS au format YAML
+require 'fileutils'   # pour créer le dossier config/ s'il n'existe pas
+
+# Fonction de lecture de la configuration du fichier .env
+def charger_env(chemin)
+  return {} unless File.exist?(chemin)          # pas de .env : dictionnaire vide
+  File.readlines(chemin).each_with_object({}) do |l, h|
+    l = l.strip                                  # retire espaces et fin de ligne
+    next if l.empty? || l.start_with?('#')       # ignore lignes vides et commentaires
+    k, v = l.split('=', 2)                       # coupe au PREMIER '=' seulement
+    h[k.strip] = v.to_s.strip.gsub(/\A["']|["']\z/, '')  # retire les guillemets éventuels
+  end
+end
+ 
+# On charge le contenu du fichier .env.
+DOTENV = charger_env(File.join(__dir__, '.env'))
+ 
+# Fonction qui retourne la valeur d'un paramètre, par ordre de priorité :
+def cfg(cle, defaut)
+  ENV[cle] || DOTENV[cle] || defaut
+end
+
+# Paramètres de la plateforme
+GROUPE     = cfg('GROUPE', '3').to_i
+NB_APP     = cfg('NB_APP', '2').to_i
+EXTENSIONS = cfg('EXTENSIONS', '').downcase.split(',').map(&:strip)
+ 
+# Garde-fous de sécurité : la plage 192.168.56.0/21 est la seule autorisée par VirtualBox.
+abort "GROUPE doit valoir de 1 à 8 (plage VirtualBox 192.168.56.0/21)" unless (1..8).cover?(GROUPE)
+# Les serveurs applicatifs occupent .21 à .29 ; .31 et .32 sont pris par les bases.
+abort "NB_APP doit valoir de 2 à 9 (adresses .21 à .29)" unless (2..9).cover?(NB_APP)
+ 
+# Sous-réseau du groupe : 192.168.(55 + G).0/24  ->  groupe 1 = 192.168.56.x
+RESEAU = "192.168.#{55 + GROUPE}"
+BOITE   = "bento/ubuntu-24.04"
+VERSION = '202510.26.0'
+ 
+# Table NOEUDS : Chaque entrée = une machine (nom, adresse IP, mémoire en Mo, rôle)
+NOEUDS = []
+ 
+
+
+
+# Répartiteur de charge actif (HAProxy), passif et supervision (Prometheus + Grafana)
+NOEUDS << { "nom" => "lb1", "ip" => "#{RESEAU}.11", "mem" => 512, "role" => "lb" }
+NOEUDS << { "nom" => "lb2", "ip" => "#{RESEAU}.12", "mem" => 512, "role" => "lb" } if EXTENSIONS.include?('e1')
+
+
+
+
+# Fichiers engendrés et réécrits à chaque exécution de vagrant et lus par les scripts dans les VM, via le dossier partagé /vagrant/config/.
+FileUtils.mkdir_p(File.join(__dir__, "config"))
+# La table NOEUDS au format YAML : liste des machines, adresses, rôles
+File.write(File.join(__dir__, "config", "noeuds.yml"), NOEUDS.to_yaml)
+# Les paramètres utiles aux scripts (ceux qui ne sont pas des secrets)
+File.write(File.join(__dir__, "config", "plateforme.env"), "GROUPE=#{GROUPE}\nNB_APP=#{NB_APP}\nEXTENSIONS=#{EXTENSIONS.join(',')}\n")
+ 
+# Association rôle -> script de provisionnement
+SCRIPTS = { 
+  "bdd" => "bdd.sh", 
+  "replique" => "replique.sh", 
+  "app" => "app.sh",
+  "lb" => "lb.sh", 
+  "obs" => "obs.sh" 
+}
+# Rôles dont le script est rejoué à CHAQUE démarrage (run: "always") : leur configuration dépend de NOEUDS, donc doit suivre si NB_APP change.
+TOUJOURS = %w[lb obs] # lb et obs ont donc des scripts strictement idempotents.
+
+# Définition des machines virtuelles
 Vagrant.configure("2") do |config|
-  # The most common configuration options are documented and commented below.
-  # For a complete reference, please see the online documentation at
-  # https://docs.vagrantup.com.
-
-  # Every Vagrant development environment requires a box. You can search for
-  # boxes at https://vagrantcloud.com/search.
-  config.vm.box = "bento/ubuntu-24.04"
-  config.vm.box_version = "202510.26.0"
-
-  # Disable automatic box update checking. If you disable this, then
-  # boxes will only be checked for updates when the user runs
-  # `vagrant box outdated`. This is not recommended.
-  # config.vm.box_check_update = false
-
-  # Create a forwarded port mapping which allows access to a specific port
-  # within the machine from a port on the host machine. In the example below,
-  # accessing "localhost:8080" will access port 80 on the guest machine.
-  # NOTE: This will enable public access to the opened port
-  # config.vm.network "forwarded_port", guest: 80, host: 8080
-
-  # Create a forwarded port mapping which allows access to a specific port
-  # within the machine from a port on the host machine and only allow access
-  # via 127.0.0.1 to disable public access
-  # config.vm.network "forwarded_port", guest: 80, host: 8080, host_ip: "127.0.0.1"
-
-  # Create a private network, which allows host-only access to the machine
-  # using a specific IP.
-  # config.vm.network "private_network", ip: "192.168.33.10"
-
-  # Create a public network, which generally matched to bridged network.
-  # Bridged networks make the machine appear as another physical device on
-  # your network.
-  # config.vm.network "public_network"
-
-  # Share an additional folder to the guest VM. The first argument is
-  # the path on the host to the actual folder. The second argument is
-  # the path on the guest to mount the folder. And the optional third
-  # argument is a set of non-required options.
-  # config.vm.synced_folder "../data", "/vagrant_data"
-
-  # Disable the default share of the current code directory. Doing this
-  # provides improved isolation between the vagrant box and your host
-  # by making sure your Vagrantfile isn't accessible to the vagrant box.
-  # If you use this you may want to enable additional shared subfolders as
-  # shown above.
-  # config.vm.synced_folder ".", "/vagrant", disabled: true
-
-  # Provider-specific configuration so you can fine-tune various
-  # backing providers for Vagrant. These expose provider-specific options.
-  # Example for VirtualBox:
-  #
-  # config.vm.provider "virtualbox" do |vb|
-  #   # Display the VirtualBox GUI when booting the machine
-  #   vb.gui = true
-  #
-  #   # Customize the amount of memory on the VM:
-  #   vb.memory = "1024"
-  # end
-  #
-  # View the documentation for the provider you are using for more
-  # information on available options.
-
-  # Enable provisioning with a shell script. Additional provisioners such as
-  # Ansible, Chef, Docker, Puppet and Salt are also available. Please see the
-  # documentation for more information about their specific syntax and use.
-  # config.vm.provision "shell", inline: <<-SHELL
-  #   apt-get update
-  #   apt-get install -y apache2
-  # SHELL
+  config.vm.box = BOITE
+  config.vm.box_version = VERSION     # version épinglée (reproductibilité)
+  config.vm.box_check_update = false  # pas de vérification de mise à jour (connexion lente)
+  config.vm.boot_timeout = 300        # 5 minutes max pour le démarrage d'une VM
+ 
+  # Une VM par entrée de la table NOEUDS.
+  NOEUDS.each do |n|
+    config.vm.define n["nom"] do |m|
+      m.vm.hostname = n["nom"]                              # nom d'hôte (renvoyé par /info)
+      m.vm.network "private_network", ip: n["ip"]           # réseau privé hôte-seul (R8)
+ 
+      # Seul le répartiteur expose un port vers l'hôte : lb1 -> localhost:8080, lb2 -> localhost:8081.
+      # host_ip 127.0.0.1 : accessible seulement depuis le poste.
+      # auto_correct: false : si le port est pris, on échoue clairement au lieu de choisir un autre port sans prévenir.
+      if n["role"] == "lb"
+        port_hote = n["nom"] == "lb1" ? 8080 : 8081
+        m.vm.network "forwarded_port", guest: 80, host: port_hote,
+                     host_ip: "127.0.0.1", auto_correct: false
+      end
+ 
+      # Ressources VirtualBox de la VM
+      m.vm.provider "virtualbox" do |vb|
+        vb.name = "tp_virtual-g#{GROUPE}-#{n['nom']}"  # nom lisible dans VirtualBox
+        vb.memory = n["mem"]                            # mémoire en Mo (depuis la table)
+        vb.cpus = 1                                     # un seul processeur par VM
+        vb.linked_clone = true                          # clone lié : plus rapide, moins de disque
+      end
+ 
+      # Provisionnement : exécute le script correspondant au rôle de la machine.
+      # run "always" pour lb et obs, run "once" pour les autres.
+      m.vm.provision "shell", name: n["role"], path: "scripts/#{SCRIPTS[n['role']]}",
+                     run: (TOUJOURS.include?(n["role"]) ? "always" : "once")
+    end
+  end
 end
