@@ -25,7 +25,7 @@ fi
 [ -f .env ] || { echo "ERREUR : .env absent. Faire : cp .env.exemple .env" >&2; exit 1; }
 ACTUEL=2
 if [ -f config/noeuds.yml ]; then
-  ACTUEL=$(grep -cE 'role: *app *$' config/noeuds.yml || true)
+  ACTUEL=$(tr -d '\r' < config/noeuds.yml | grep -cE 'role: *app *$' || true)   # tr : fichier écrit sous Windows
 fi
 journal "serveurs applicatifs : $ACTUEL -> $CIBLE"
 
