@@ -47,8 +47,9 @@ VERSION = '202510.26.0'
 # Table NOEUDS : Chaque entrée = une machine (nom, adresse IP, mémoire en Mo, rôle)
 NOEUDS = []
  
-
-
+# Répartiteur de charge actif (HAProxy), passif et supervision (Prometheus + Grafana)
+NOEUDS << { "nom" => "lb1", "ip" => "#{RESEAU}.11", "mem" => 512, "role" => "lb" }
+NOEUDS << { "nom" => "lb2", "ip" => "#{RESEAU}.12", "mem" => 512, "role" => "lb" } if EXTENSIONS.include?('e1')
 
 # Bases de données (primaire + réplique) et serveurs applicatifs (NB_APP, .21 à .29)
 NOEUDS << { "nom" => "bdd1", "ip" => "#{RESEAU}.31", "mem" => 768, "role" => "bdd" }
@@ -56,13 +57,6 @@ NOEUDS << { "nom" => "bdd2", "ip" => "#{RESEAU}.32", "mem" => 768, "role" => "re
 (1..NB_APP).each do |i|
   NOEUDS << { "nom" => "app#{i}", "ip" => "#{RESEAU}.#{20 + i}", "mem" => 512, "role" => "app" }
 end
-
-# Répartiteur de charge actif (HAProxy), passif et supervision (Prometheus + Grafana)
-NOEUDS << { "nom" => "lb1", "ip" => "#{RESEAU}.11", "mem" => 512, "role" => "lb" }
-NOEUDS << { "nom" => "lb2", "ip" => "#{RESEAU}.12", "mem" => 512, "role" => "lb" } if EXTENSIONS.include?('e1')
-
-
-
 
 # binwrite (et non write) : sous Windows, write ajouterait des fins de ligne CRLF
 # que les scripts Linux ne savent pas lire (piège n°5 du sujet).
@@ -89,7 +83,7 @@ Vagrant.configure("2") do |config|
   config.vm.box = BOITE
   config.vm.box_version = VERSION     # version épinglée (reproductibilité)
   config.vm.box_check_update = false  # pas de vérification de mise à jour (connexion lente)
-  config.vm.boot_timeout = 300        # 5 minutes max pour le démarrage d'une VM
+  config.vm.boot_timeout = 600        # 10 minutes max pour le démarrage d'une VM
  
   # Une VM par entrée de la table NOEUDS.
   NOEUDS.each do |n|
