@@ -34,8 +34,8 @@ awk '/^# BEGIN RESULTATS-BF$/{skip=1; next} /^# END RESULTATS-BF$/{skip=0; next}
 cat >> "$TMP" <<EOF
 # BEGIN RESULTATS-BF
 # Acces applicatif et replication limites au reseau prive du groupe.
-host    $PG_DB       $PG_APP_USER       $RESEAU/24       scram-sha-256
-host    replication  $PG_REPL_USER      $RESEAU/24       scram-sha-256
+host    $PG_DB       $PG_APP_USER       $RESEAU.0/24       scram-sha-256
+host    replication  $PG_REPL_USER      $RESEAU.0/24       scram-sha-256
 # END RESULTATS-BF
 EOF
 if ! cmp -s "$TMP" "$HBA"; then
