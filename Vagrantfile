@@ -50,6 +50,13 @@ NOEUDS = []
 
 
 
+# Bases de données (primaire + réplique) et serveurs applicatifs (NB_APP, .21 à .29)
+NOEUDS << { "nom" => "bdd1", "ip" => "#{RESEAU}.31", "mem" => 768, "role" => "bdd" }
+NOEUDS << { "nom" => "bdd2", "ip" => "#{RESEAU}.32", "mem" => 768, "role" => "replique" }
+(1..NB_APP).each do |i|
+  NOEUDS << { "nom" => "app#{i}", "ip" => "#{RESEAU}.#{20 + i}", "mem" => 512, "role" => "app" }
+end
+
 # Répartiteur de charge actif (HAProxy), passif et supervision (Prometheus + Grafana)
 NOEUDS << { "nom" => "lb1", "ip" => "#{RESEAU}.11", "mem" => 512, "role" => "lb" }
 NOEUDS << { "nom" => "lb2", "ip" => "#{RESEAU}.12", "mem" => 512, "role" => "lb" } if EXTENSIONS.include?('e1')
@@ -57,12 +64,14 @@ NOEUDS << { "nom" => "lb2", "ip" => "#{RESEAU}.12", "mem" => 512, "role" => "lb"
 
 
 
+# binwrite (et non write) : sous Windows, write ajouterait des fins de ligne CRLF
+# que les scripts Linux ne savent pas lire (piège n°5 du sujet).
 # Fichiers engendrés et réécrits à chaque exécution de vagrant et lus par les scripts dans les VM, via le dossier partagé /vagrant/config/.
 FileUtils.mkdir_p(File.join(__dir__, "config"))
 # La table NOEUDS au format YAML : liste des machines, adresses, rôles
-File.write(File.join(__dir__, "config", "noeuds.yml"), NOEUDS.to_yaml)
+File.binwrite(File.join(__dir__, "config", "noeuds.yml"), NOEUDS.to_yaml)
 # Les paramètres utiles aux scripts (ceux qui ne sont pas des secrets)
-File.write(File.join(__dir__, "config", "plateforme.env"), "GROUPE=#{GROUPE}\nNB_APP=#{NB_APP}\nEXTENSIONS=#{EXTENSIONS.join(',')}\n")
+File.binwrite(File.join(__dir__, "config", "plateforme.env"), "GROUPE=#{GROUPE}\nNB_APP=#{NB_APP}\nEXTENSIONS=#{EXTENSIONS.join(',')}\n")
  
 # Association rôle -> script de provisionnement
 SCRIPTS = { 
