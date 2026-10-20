@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""RÉSULTATS-BF — service applicatif SANS ÉTAT : /resultat, /sante, /info.
-Configuré uniquement par variables d'environnement (aucun secret ici, R7)."""
-import json
-import os
-import re
-import socket
+"""RÉSULTATS-BF : service SANS ÉTAT, configuré par l'environnement (R7)."""
+import json, os, re, socket
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
-
 import psycopg2
 
 DB = {  # paramètres lus dans l'environnement, jamais écrits en dur
@@ -21,14 +16,24 @@ DB = {  # paramètres lus dans l'environnement, jamais écrits en dur
     "options": "-c statement_timeout=2000",  # aucune requête de plus de 2 s
 }
 PORT = int(os.environ.get("APP_PORT", "3000"))
+FICHIER_PRIMAIRE = os.environ.get("DB_PRIMAIRE_FICHIER", "")
 HOTE = socket.gethostname()
 MATRICULE_OK = re.compile(r"^[A-Za-z0-9-]{1,20}$")
 COLONNES = ("matricule", "nom", "serie", "moyenne", "admis")
 
+def hote_primaire():
+    """Base PRIMAIRE relue à chaque requête dans le fichier réécrit par
+    ops/bascule.sh : l'application suit une bascule sans redémarrer."""
+    try:
+        with open(FICHIER_PRIMAIRE) as fichier:
+            lignes = [l for l in fichier if l.startswith("PRIMARY_IP=")]
+        return lignes[0].split("=", 1)[1].strip() if lignes else DB["host"]
+    except OSError:  # pas de fichier : on garde DB_HOST
+        return DB["host"]
+
 def interroger(sql, params=()):
-    """Connexion NEUVE à chaque appel, puis refermée : rien n'est gardé, donc
-    après une absence de la base ou une bascule, l'appel suivant réessaie seul."""
-    connexion = psycopg2.connect(**DB)
+    """Connexion NEUVE à chaque appel, refermée ensuite : rien n'est gardé."""
+    connexion = psycopg2.connect(**(DB | {"host": hote_primaire()}))
     try:
         with connexion.cursor() as curseur:
             curseur.execute(sql, params)
@@ -36,8 +41,7 @@ def interroger(sql, params=()):
     finally:
         connexion.close()
 
-def en_json(valeur):
-    """La moyenne arrive en Decimal, que le module json ne sait pas écrire."""
+def en_json(valeur):  # la moyenne arrive en Decimal, inconnu du module json
     return float(valeur) if isinstance(valeur, Decimal) else str(valeur)
 
 class Gestionnaire(BaseHTTPRequestHandler):
@@ -80,9 +84,6 @@ class Gestionnaire(BaseHTTPRequestHandler):
             ligne = interroger(
                 "SELECT matricule, nom, serie, moyenne, admis "
                 "FROM resultats WHERE matricule = %s", (matricule,))
-        except psycopg2.DataError:   # format refusé par la base
-            self.repondre(400, {"erreur": "matricule invalide"})
-            return
         except psycopg2.Error:       # base absente, bascule en cours...
             self.repondre(503, {"erreur": "service momentanément indisponible"})
             return
@@ -93,7 +94,6 @@ class Gestionnaire(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     ThreadingHTTPServer.daemon_threads = True
-    # 0.0.0.0 et non 127.0.0.1 : sinon le répartiteur ne peut pas nous joindre
-    serveur = ThreadingHTTPServer(("0.0.0.0", PORT), Gestionnaire)
+    serveur = ThreadingHTTPServer(("0.0.0.0", PORT), Gestionnaire)  # pas 127.0.0.1 !
     print(f"RESULTATS-BF : {HOTE} écoute sur 0.0.0.0:{PORT}", flush=True)
     serveur.serve_forever()

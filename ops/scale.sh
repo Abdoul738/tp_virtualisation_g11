@@ -22,9 +22,10 @@ if ! [[ "$CIBLE" =~ ^[0-9]+$ ]] || [ "$CIBLE" -lt 2 ] || [ "$CIBLE" -gt 9 ]; the
 fi
 
 # --- 2. Combien de serveurs aujourd'hui ? (lu dans la source de vérité) --
+[ -f .env ] || { echo "ERREUR : .env absent. Faire : cp .env.exemple .env" >&2; exit 1; }
 ACTUEL=2
 if [ -f config/noeuds.yml ]; then
-  ACTUEL=$(grep -c ':role: app' config/noeuds.yml || true)
+  ACTUEL=$(grep -cE 'role: *app *$' config/noeuds.yml || true)
 fi
 journal "serveurs applicatifs : $ACTUEL -> $CIBLE"
 
@@ -37,22 +38,29 @@ if [ "$CIBLE" -lt "$ACTUEL" ]; then
   done
 fi
 
-# --- 4. Créer les machines manquantes (et régénérer noeuds.yml) ----------
+# --- 4. LA seule valeur qui change : NB_APP, enregistrée dans .env ------
+# (ainsi un « vagrant up » ultérieur garde le bon nombre de serveurs)
+if grep -q '^NB_APP=' .env; then
+  sed -i "s/^NB_APP=.*/NB_APP=$CIBLE/" .env
+else
+  echo "NB_APP=$CIBLE" >> .env
+fi
 export NB_APP=$CIBLE
-for i in $(seq 1 "$CIBLE"); do
-  vagrant up "app$i"            # ne fait rien si la machine tourne déjà
-done
+journal "NB_APP=$CIBLE enregistré dans .env"
 
-# --- 5. Le répartiteur relit noeuds.yml et régénère sa configuration ----
+# --- 5. Créer les machines manquantes (le Vagrantfile régénère noeuds.yml)
+vagrant up $(seq -f 'app%g' 1 "$CIBLE")   # ne touche pas celles qui tournent
+
+# --- 6. Le répartiteur relit noeuds.yml et régénère sa configuration ----
 journal "mise à jour du répartiteur"
 vagrant provision lb1
 
-# --- 6. Preuve : quels serveurs répondent derrière le répartiteur ? -----
+# --- 7. Preuve : quels serveurs répondent derrière le répartiteur ? -----
 journal "test de répartition : $ESSAIS requêtes sur $LB_URL/info"
 REPONSES=$(for _ in $(seq 1 "$ESSAIS"); do
   curl -s --max-time 3 "$LB_URL/info" | grep -o '"serveur": *"[^"]*"' | cut -d'"' -f4
   echo
-done | grep -v '^$' | sort | uniq -c)
+done | { grep -v '^$' || true; } | sort | uniq -c)   # aucune réponse : pas d'arrêt muet
 echo "$REPONSES"
 
 VUS=$(echo "$REPONSES" | grep -c 'app' || true)
@@ -62,4 +70,3 @@ else
   journal "ATTENTION : $VUS serveur(s) sur $CIBLE répondent" >&2
   exit 1
 fi
-journal "Rappel : pour les prochaines commandes vagrant, garder NB_APP=$CIBLE"

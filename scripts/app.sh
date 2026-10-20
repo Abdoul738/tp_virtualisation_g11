@@ -4,68 +4,48 @@
 # Lancé par Vagrant (en root) sur chaque machine app1 ... appN.
 # IDEMPOTENT (R2) : rejoué deux fois, il ne change rien la 2e fois.
 # =====================================================================
-set -euo pipefail
+# lib.sh (commun au groupe) charge .env, config/plateforme.env et
+# config/noeuds.yml, et fournit BDD1_IP, ecrire_si_change, apt_installer.
+source /vagrant/scripts/lib.sh
 
-SRC=/vagrant/app/app.py              # le code, partagé par Vagrant
+: "${PG_DB:?PG_DB doit etre defini dans .env}"
+: "${PG_APP_USER:?PG_APP_USER doit etre defini dans .env}"
+: "${PG_APP_PASSWORD:?PG_APP_PASSWORD doit etre defini dans .env}"
+: "${BDD1_IP:?bdd1 absente de config/noeuds.yml}"
+
 DEST=/opt/resultats-bf               # où le code est installé dans la VM
 CONF=/etc/resultats-bf/app.env       # paramètres + mot de passe (hors Git)
 UNIT=/etc/systemd/system/resultats-bf.service
-CHANGE=0                             # passe à 1 si quelque chose a changé
-
-journal() { echo "[app.sh $(hostname)] $*"; }
-
-# Écrit le contenu reçu dans le fichier $1 SEULEMENT s'il est différent.
-# On écrase avec ">" (jamais ">>" : piège n°2, les doublons).
-ecrire_si_change() {
-  local cible=$1 mode=$2 tmp
-  tmp=$(mktemp)
-  cat > "$tmp"
-  if [ -f "$cible" ] && cmp -s "$tmp" "$cible"; then
-    rm -f "$tmp"
-  else
-    install -D -m "$mode" "$tmp" "$cible"; rm -f "$tmp"
-    journal "mis à jour : $cible"; CHANGE=1
-  fi
-}
-
-# --- 1. Paramètres : variables reçues de Vagrant, sinon fichier .env ---
-if [ -f /vagrant/.env ]; then
-  # tr -d '\r' : protège contre un .env écrit sous Windows (piège CRLF)
-  set -a; . <(tr -d '\r' < /vagrant/.env); set +a
-fi
-if [ -z "${DB_HOST:-}" ] && [ -f /vagrant/config/noeuds.yml ]; then
-  # Adresse de bdd1 lue dans la source unique de vérité (config/noeuds.yml)
-  DB_HOST=$(awk '/:nom: bdd1/{t=1} t && /:ip:/{print $2; exit}' /vagrant/config/noeuds.yml)
-fi
-: "${DB_HOST:?DB_HOST introuvable (ni variable, ni config/noeuds.yml)}"
-: "${DB_PASSWORD:?DB_PASSWORD absent : copiez .env.exemple en .env}"
-
-# --- 2. Paquets : installés une seule fois (connexion lente) ---------
-if ! dpkg -s python3-psycopg2 >/dev/null 2>&1; then
-  journal "installation de python3-psycopg2"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq python3-psycopg2 curl
-fi
-
-# --- 3. Utilisateur dédié, sans droits particuliers ---------------------
-id resultats >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin resultats
-
-# --- 4. Le code : copié dans la VM (la VM ne dépend pas du dossier partagé)
-ecrire_si_change "$DEST/app.py" 644 < "$SRC"
-
-# --- 5. Les paramètres : lisibles par root seulement -------------------
-ecrire_si_change "$CONF" 600 <<EOF
-DB_HOST=$DB_HOST
-DB_PORT=${DB_PORT:-5432}
-DB_NAME=${DB_NAME:-resultats}
-DB_USER=${DB_USER:-app_user}
-DB_PASSWORD=$DB_PASSWORD
 APP_PORT=${APP_PORT:-3000}
+CHANGE=0                             # passe à 1 si un fichier a changé
+
+journal() { echo "[app.sh $MON_NOM] $*"; }
+
+# --- 1. Paquets : installés une seule fois -----------------------------
+apt_installer python3-psycopg2 curl
+
+# --- 2. Utilisateur dédié, sans droits particuliers --------------------
+id resultats >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin resultats
+install -d -m 755 "$DEST"
+install -d -m 700 /etc/resultats-bf
+
+# --- 3. Le code : copié dans la VM (écrasé, jamais ajouté : piège n°2) --
+ecrire_si_change "$DEST/app.py" 644 < /vagrant/app/app.py && CHANGE=1 || true
+
+# --- 4. Les paramètres : lisibles par root seulement -------------------
+# DB_PRIMAIRE_FICHIER : réécrit par ops/bascule.sh -> l'app suit la bascule.
+ecrire_si_change "$CONF" 600 <<EOF && CHANGE=1 || true
+DB_HOST=$BDD1_IP
+DB_PRIMAIRE_FICHIER=/vagrant/config/primary.env
+DB_PORT=5432
+DB_NAME=$PG_DB
+DB_USER=$PG_APP_USER
+DB_PASSWORD=$PG_APP_PASSWORD
+APP_PORT=$APP_PORT
 EOF
 
-# --- 6. Le service systemd : démarre au boot, redémarre s'il plante ---
-ecrire_si_change "$UNIT" 644 <<EOF
+# --- 5. Le service systemd : démarre au boot, redémarre s'il plante ---
+ecrire_si_change "$UNIT" 644 <<EOF && CHANGE=1 || true
 [Unit]
 Description=RESULTATS-BF service applicatif
 After=network-online.target
@@ -82,19 +62,21 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-# --- 7. Démarrage : on ne redémarre que si quelque chose a changé ------
+# --- 6. Démarrage : on ne redémarre que si quelque chose a changé ------
 systemctl daemon-reload
 systemctl enable --quiet resultats-bf
 if [ "$CHANGE" -eq 1 ]; then
-  systemctl restart resultats-bf; journal "service redémarré"
+  systemctl restart resultats-bf; journal "fichiers mis à jour, service redémarré"
 else
   systemctl start resultats-bf;   journal "rien à changer (idempotent)"
 fi
+node_exporter                        # supervision, seulement si l'extension e2 est active
 
-# --- 8. Vérification : l'application répond-elle ? ---------------------
+# --- 7. Vérification : l'application répond-elle ? ---------------------
+# (/info ne dépend pas de la base : une base pas encore prête ne bloque rien)
 for _ in $(seq 1 15); do
-  if curl -fsS "http://127.0.0.1:${APP_PORT:-3000}/info" >/dev/null 2>&1; then
-    journal "OK : l'application répond sur le port ${APP_PORT:-3000}"
+  if curl -fsS "http://127.0.0.1:$APP_PORT/info" >/dev/null 2>&1; then
+    journal "OK : l'application répond sur le port $APP_PORT"
     exit 0
   fi
   sleep 1
