@@ -5,6 +5,7 @@ from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 import psycopg2
+from queue import Queue, Empty
 
 DB = {  # paramètres lus dans l'environnement, jamais écrits en dur
     "host": os.environ.get("DB_HOST", "127.0.0.1"),
@@ -31,15 +32,46 @@ def hote_primaire():
     except OSError:  # pas de fichier : on garde DB_HOST
         return DB["host"]
 
+_connexions = Queue(maxsize=4)
+for _ in range(4):
+    _connexions.put(None)
+
+
 def interroger(sql, params=()):
-    """Connexion NEUVE à chaque appel, refermée ensuite : rien n'est gardé."""
-    connexion = psycopg2.connect(**(DB | {"host": hote_primaire()}))
+    """Reutilise jusqu'a quatre connexions, chacune reservee a un appel."""
     try:
+        entree = _connexions.get(timeout=0.5)
+    except Empty:
+        raise psycopg2.OperationalError("Connexions temporairement occupees")
+
+    connexion = None
+    try:
+        hote = hote_primaire()
+
+        if entree is not None:
+            ancien_hote, connexion = entree
+            if ancien_hote != hote or connexion.closed:
+                connexion.close()
+                connexion = None
+
+        if connexion is None:
+            connexion = psycopg2.connect(**(DB | {"host": hote}))
+            connexion.set_session(readonly=True, autocommit=True)
+
         with connexion.cursor() as curseur:
             curseur.execute(sql, params)
             return curseur.fetchone()
+
+    except Exception:
+        if connexion is not None:
+            connexion.close()
+        connexion = None
+        raise
+
     finally:
-        connexion.close()
+        _connexions.put(
+            (hote, connexion) if connexion is not None else None
+        )
 
 def en_json(valeur):  # la moyenne arrive en Decimal, inconnu du module json
     return float(valeur) if isinstance(valeur, Decimal) else str(valeur)
@@ -65,7 +97,10 @@ class Gestionnaire(BaseHTTPRequestHandler):
                 self.resultat(parse_qs(url.query).get("matricule", [""])[0].strip())
             else:
                 self.repondre(404, {"erreur": "adresse inconnue"})
-        except Exception as erreur:  # filet de sécurité : jamais de réponse vide
+        except (BrokenPipeError, ConnectionResetError):
+            # Le client est parti : aucune reponse supplementaire possible.
+            pass
+        except Exception as erreur:
             self.repondre(500, {"erreur": "erreur interne", "detail": str(erreur)})
 
     def sante(self):
@@ -84,7 +119,11 @@ class Gestionnaire(BaseHTTPRequestHandler):
             ligne = interroger(
                 "SELECT matricule, nom, serie, moyenne, admis "
                 "FROM resultats WHERE matricule = %s", (matricule,))
-        except psycopg2.Error:       # base absente, bascule en cours...
+        except psycopg2.Error as erreur:
+            diagnostic = str(erreur)
+            if DB["password"]:
+                diagnostic = diagnostic.replace(DB["password"], "[masque]")
+            self.log_message("PostgreSQL /resultat : %s", diagnostic)
             self.repondre(503, {"erreur": "service momentanément indisponible"})
             return
         if ligne is None:

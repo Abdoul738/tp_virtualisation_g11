@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Outils executes dans une VM PostgreSQL par les scripts ops/.
+# Outils PostgreSQL du projet.
 set -euo pipefail
 source /vagrant/scripts/lib.sh
 
@@ -8,48 +8,163 @@ DATA_DIR="/var/lib/postgresql/$PG_VERSION/main"
 CONF_DIR="/etc/postgresql/$PG_VERSION/main/conf.d"
 action="${1:-status}"
 
-est_replique() { runuser -u postgres -- psql -Atqc 'SELECT pg_is_in_recovery()' | grep -qx t; }
-attendre_sql() { for _ in $(seq 1 30); do runuser -u postgres -- psql -Atqc 'SELECT 1' >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
+lire_mode() {
+  timeout 15s runuser -u postgres -- \
+    psql -X -w -v ON_ERROR_STOP=1 -d postgres \
+    -Atqc 'SELECT pg_is_in_recovery();'
+}
+
+attendre_sql() {
+  for _ in $(seq 1 30); do
+    if timeout 3s runuser -u postgres -- \
+        psql -X -w -v ON_ERROR_STOP=1 -d postgres \
+        -Atqc 'SELECT 1' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+configurer_acces() {
+  : "${PG_DB:?PG_DB absent}"
+  : "${PG_APP_USER:?PG_APP_USER absent}"
+
+  local hba nom ip regle erreurs
+
+  hba=$(timeout 15s runuser -u postgres -- \
+    psql -X -w -v ON_ERROR_STOP=1 -d postgres -Atqc 'SHOW hba_file;')
+
+  if [[ ! -f "$hba" ]]; then
+    echo "Fichier pg_hba.conf introuvable" >&2
+    return 1
+  fi
+
+  if [[ ! -f "${hba}.avant-acces-apps" ]]; then
+    cp -p "$hba" "${hba}.avant-acces-apps"
+  fi
+
+  while read -r nom ip; do
+    regle=$(printf 'host %s %s %s/32 scram-sha-256' \
+      "$PG_DB" "$PG_APP_USER" "$ip")
+
+    if ! grep -Fqx -- "$regle" "$hba"; then
+      printf '\n%s\n' "$regle" >> "$hba"
+    fi
+  done < <(noeuds app)
+
+  erreurs=$(timeout 15s runuser -u postgres -- \
+    psql -X -w -v ON_ERROR_STOP=1 -d postgres \
+    -Atqc 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;')
+
+  if [[ "$erreurs" != "0" ]]; then
+    echo "Configuration HBA invalide : rechargement refuse" >&2
+    return 1
+  fi
+
+  pg_ctlcluster "$PG_VERSION" main reload
+}
+
+configurer_ecoute() {
+  : "${MON_IP:?Adresse privee absente dans inventaire}"
+  install -d -m 755 "$CONF_DIR"
+
+  if printf "listen_addresses = '127.0.0.1,%s'\n" "$MON_IP" |
+      ecrire_si_change \
+        "$CONF_DIR/99-resultats-bf-listen.conf" 644 postgres; then
+    pg_ctlcluster "$PG_VERSION" main restart
+  fi
+
+  attendre_sql
+  configurer_acces
+}
 
 case "$action" in
-  status)
-    attendre_sql
-    if est_replique; then echo "replique"; else echo "primaire"; fi
+  reseau)
+    configurer_ecoute
+    echo "Ecoute PostgreSQL configuree sur $MON_IP"
     ;;
+
+  status)
+    mode=$(lire_mode)
+    case "$mode" in
+      t) echo "replique" ;;
+      f) echo "primaire" ;;
+      *) echo "Role PostgreSQL indetermine" >&2; exit 1 ;;
+    esac
+    ;;
+
   promote)
-    est_replique || { echo "REFUS : cette machine est deja primaire" >&2; exit 1; }
+    mode=$(lire_mode)
+    if [[ "$mode" != "t" ]]; then
+      echo "REFUS : cette machine n'est pas une replique." >&2
+      exit 1
+    fi
+
+    configurer_ecoute
     pg_ctlcluster "$PG_VERSION" main promote
-    for _ in $(seq 1 30); do ! est_replique && break; sleep 1; done
-    ! est_replique || { echo "Echec de promotion PostgreSQL" >&2; exit 1; }
+
+    for _ in $(seq 1 30); do
+      mode=$(lire_mode)
+      if [[ "$mode" == "f" ]]; then
+        break
+      fi
+      sleep 1
+    done
+
+    if [[ "$mode" != "f" ]]; then
+      echo "Echec de promotion PostgreSQL" >&2
+      exit 1
+    fi
+
     touch "$DATA_DIR/.resultats-bf-primary"
     chown postgres:postgres "$DATA_DIR/.resultats-bf-primary"
-    PRIMARY_FILE=$(mktemp)
-    cat > "$PRIMARY_FILE" <<EOF
-PRIMARY_HOST=$MON_NOM
-PRIMARY_IP=$MON_IP
-EOF
-    if ! cmp -s "$PRIMARY_FILE" /vagrant/config/primary.env 2>/dev/null; then
-      cat "$PRIMARY_FILE" > /vagrant/config/primary.env
-    fi
-    rm -f "$PRIMARY_FILE"
+
+    printf 'PRIMARY_HOST=%s\nPRIMARY_IP=%s\n' \
+      "$MON_NOM" "$MON_IP" |
+      ecrire_si_change /vagrant/config/primary.env 644 || true
+
     echo "$MON_NOM est maintenant primaire"
     ;;
+
   rejoin)
     primaire_ip="${2:?Usage: pg.sh rejoin IP_DU_PRIMAIRE}"
-    : "${PG_REPL_USER:?PG_REPL_USER doit etre defini dans .env}"
-    : "${PG_REPL_PASSWORD:?PG_REPL_PASSWORD doit etre defini dans .env}"
+    : "${PG_REPL_USER:?PG_REPL_USER absent}"
+    : "${PG_REPL_PASSWORD:?PG_REPL_PASSWORD absent}"
+
     systemctl stop postgresql
-    runuser -u postgres -- env PGPASSWORD="$PG_REPL_PASSWORD" pg_rewind \
-      -D "$DATA_DIR" --source-server="host=$primaire_ip user=$PG_REPL_USER dbname=postgres"
+
+    runuser -u postgres -- env PGPASSWORD="$PG_REPL_PASSWORD" \
+      pg_rewind -D "$DATA_DIR" \
+      --source-server="host=$primaire_ip user=$PG_REPL_USER dbname=postgres"
+
     install -d -m 755 "$CONF_DIR"
-    ecrire_si_change "$CONF_DIR/99-resultats-bf-replica.conf" 640 postgres <<EOF
-primary_conninfo = 'host=$primaire_ip port=5432 user=$PG_REPL_USER password=$PG_REPL_PASSWORD application_name=$MON_NOM'
-EOF
+
+    printf "primary_conninfo = 'host=%s port=5432 user=%s password=%s application_name=%s'\n" \
+      "$primaire_ip" "$PG_REPL_USER" "$PG_REPL_PASSWORD" "$MON_NOM" |
+      ecrire_si_change \
+        "$CONF_DIR/99-resultats-bf-replica.conf" 640 postgres || true
+
     touch "$DATA_DIR/standby.signal"
     chown postgres:postgres "$DATA_DIR/standby.signal"
-    systemctl start postgresql
-    for _ in $(seq 1 30); do est_replique && { echo "$MON_NOM reintegree comme replique"; exit 0; }; sleep 1; done
-    echo "Echec : $MON_NOM ne rejoint pas le primaire" >&2; exit 1
+
+    pg_ctlcluster "$PG_VERSION" main start
+
+    for _ in $(seq 1 30); do
+      mode=$(lire_mode)
+      if [[ "$mode" == "t" ]]; then
+        echo "$MON_NOM reintegree comme replique"
+        exit 0
+      fi
+      sleep 1
+    done
+
+    echo "Echec de reintegration" >&2
+    exit 1
     ;;
-  *) echo "Usage: $0 {status|promote|rejoin IP_DU_PRIMAIRE}" >&2; exit 2 ;;
+
+  *)
+    echo "Usage: $0 {status|reseau|promote|rejoin IP_DU_PRIMAIRE}" >&2
+    exit 2
+    ;;
 esac

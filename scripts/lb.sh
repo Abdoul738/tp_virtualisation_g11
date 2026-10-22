@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Répartiteur. La liste des serveurs est ENGENDRÉE depuis config/noeuds.yml.
 source /vagrant/scripts/lib.sh
-apt_installer haproxy keepalived socat curl
+apt_installer haproxy keepalived socat curl apache2-utils
 
-SERVEURS=$(noeuds app | awk '{printf "    server %s %s:3000 check\n", $1, $2}')
+SERVEURS=$(noeuds app | awk '{printf "    server %s %s:3000 maxconn 2 check\n", $1, $2}')
 PROM=""
-if extension_active e2 && haproxy -vv 2>/dev/null | grep -qi promex; then
+if extension_active e2; then
+  if ! haproxy -vv 2>&1 | grep -i '+PROMEX' >/dev/null; then
+    echo "ERREUR : exporteur Prometheus HAProxy absent." >&2
+    exit 1
+  fi
+
   PROM="
 frontend metriques
     bind *:8405
@@ -29,6 +34,7 @@ defaults
     timeout client 30s
     timeout server 30s
     timeout check 1s
+    timeout queue 15s
     retries 3
     option redispatch
 
