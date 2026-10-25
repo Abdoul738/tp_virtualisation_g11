@@ -1,3 +1,7 @@
+<#
+V5  - RESULTATS-BF.
+Reconstruction vagrant destroy -f puis vagrant up
+#>
 $ErrorActionPreference = "Stop"
 $racine = Split-Path -Parent $PSScriptRoot
 Push-Location $racine

@@ -1,5 +1,6 @@
 <#
 V4  - RESULTATS-BF.
+Panne de la base primaire avec vagrant halt bdd1.
 Le service renvoie proprement 503 sur /sante
 #>
 $ErrorActionPreference = "Stop"
