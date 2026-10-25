@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Bibliothèque commune. Tous les scripts sont idempotents.
+
+# Sécurité et chargement de la configuration
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 [ -f /vagrant/.env ] || { echo "ERREUR : .env absent. Faire : cp .env.exemple .env" >&2; exit 1; }
@@ -8,6 +10,7 @@ set -a
 . /vagrant/config/plateforme.env
 set +a
 
+# Lecture de la source unique de vérité (noeuds.yml)
 NOEUDS_YML=/vagrant/config/noeuds.yml
 # noeuds ROLE|* -> lignes "nom ip"
 noeuds() { awk -v r="$1" '{gsub(/\047|"/,"")} /^- nom:/{n=$3} /^  ip:/{i=$2} /^  role:/{ if (r=="*" || $2==r) print n, i }' "$NOEUDS_YML"; }

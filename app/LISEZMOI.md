@@ -1,6 +1,6 @@
 # Service applicatif — Membre 2
 
-Fichier : `app/app.py` (Python 3, moins de 100 lignes, sans état).
+Fichier : `app/app.py` (Python 3, moins de 100 lignes comme l'exige le sujet, sans état).
 
 ## Ce qu'il fait
 
@@ -41,8 +41,11 @@ Aucune adresse ni aucun mot de passe n'est écrit dans `app.py` ou `app.sh`.
 
 ## Comportement en cas de panne
 
-- Une connexion neuve est ouverte à chaque requête, puis refermée : rien
-  n'est gardé en mémoire.
+- Aucune donnée d'usager n'est gardée en mémoire (service **sans état**) :
+  n'importe quel serveur peut répondre à n'importe quelle requête.
+- Les connexions à la base sont **réutilisées** (4 au maximum par serveur,
+  « pool ») : sur un poste de test, environ 1 100 requêtes/s au lieu de 140 avec une connexion
+  neuve à chaque fois. Une connexion cassée est jetée et remplacée.
 - À chaque requête, l'adresse de la base **primaire** est relue dans
   `config/primary.env`. Après `ops/bascule.sh`, les applications utilisent
   bdd2 **sans redémarrage** (si le fichier est absent : `DB_HOST`).
