@@ -1,3 +1,7 @@
+<#
+Scénario V6  - RESULTATS-BF.
+Panne du répartiteur (E1) vagrant halt lb1
+#>
 $ErrorActionPreference = "Stop"
 $racine = Split-Path -Parent $PSScriptRoot
 Push-Location $racine
