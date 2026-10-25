@@ -1,7 +1,6 @@
 #requires -Version 5.1
 <#
-V3 autonome - RESULTATS-BF. Placer dans tests/, lancer .\tests\v3.ps1.
-Aucun autre script PowerShell requis. Un essai ab -n 2000 -c 50 par configuration.
+V3 autonome - RESULTATS-BF. Un essai ab -n 2000 -c 50 par configuration.
 Prerequis : bases fonctionnelles, Vagrant et ab/curl/timeout sur lb1.
 Le script arrete lb2 et app3/app4, prepare 2 puis 4 applications et provisionne lb1.
 Il ne modifie pas les bases. A la fin : lb2 arretee, 4 applications actives.
