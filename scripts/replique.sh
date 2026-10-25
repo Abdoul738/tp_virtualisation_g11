@@ -1,47 +1,46 @@
 #!/usr/bin/env bash
-# Construit bdd2 par pg_basebackup. Ne jamais executer apres une promotion.
+# =====================================================================
+# scripts/replique.sh — Provisionnement de bdd2 (membre 3)
+# Premier démarrage : réplique en flux du primaire (pg_basebackup + slot).
+# Rejoué (vagrant provision, R2) : ne modifie rien. Si bdd2 a été promue
+# primaire, ses données ne sont JAMAIS écrasées.
+# =====================================================================
 set -euo pipefail
-source /vagrant/scripts/lib.sh
+source /vagrant/scripts/pg.sh          # charge aussi lib.sh (.env, noeuds.yml)
 
+: "${PG_DB:?PG_DB doit etre defini dans .env}"
+: "${PG_APP_USER:?PG_APP_USER doit etre defini dans .env}"
 : "${PG_REPL_USER:?PG_REPL_USER doit etre defini dans .env}"
 : "${PG_REPL_PASSWORD:?PG_REPL_PASSWORD doit etre defini dans .env}"
+
 apt_installer postgresql postgresql-client
-PG_VERSION=$(pg_lsclusters -h | awk 'NR == 1 {print $1}')
-DATA_DIR="/var/lib/postgresql/$PG_VERSION/main"
+pg_init
+pg_configurer                          # configuration identique à bdd1 : prête à être promue
 
-# Une replique deja operationnelle est idempotente. Une ancienne primaire ne
-# doit surtout pas etre ecrasee par un nouveau basebackup : utiliser pg_rewind.
-if runuser -u postgres -- psql -Atqc 'SELECT pg_is_in_recovery()' 2>/dev/null | grep -qx t; then
-  node_exporter
-  echo "bdd2 : replique deja configuree"
-  exit 0
-fi
-if [ -f "$DATA_DIR/.resultats-bf-primary" ]; then
-  echo "REFUS : $MON_NOM contient un primaire. Lancez ops/reintegrer_bdd1.sh, pas replique.sh." >&2
-  exit 1
-fi
+case "$(pg_role)" in
+  replique)
+    node_exporter
+    echo "$MON_NOM : replique deja configuree (flux $(sql postgres 'SELECT status FROM pg_stat_wal_receiver'))"
+    exit 0 ;;
+  primaire)
+    node_exporter
+    echo "$MON_NOM : primaire depuis une bascule, aucune donnee n'est touchee"
+    exit 0 ;;
+  isolee)
+    echo "$MON_NOM : isolee apres une bascule, lancer ops/reintegrer_bdd1.sh depuis l'hote"
+    exit 0 ;;
+esac
 
-systemctl stop postgresql
-rm -rf -- "$DATA_DIR"/*
-install -d -m 700 -o postgres -g postgres "$DATA_DIR"
-
-echo "Attente du primaire $BDD1_IP..."
+# Cluster neuf : copie du primaire désigné par config/primary.env (bdd1 au premier démarrage).
+echo "Attente du primaire..."
 for essai in $(seq 1 60); do
-  if PGPASSWORD="$PG_REPL_PASSWORD" pg_isready -h "$BDD1_IP" -U "$PG_REPL_USER" -d postgres -q; then break; fi
-  [ "$essai" -eq 60 ] && { echo "bdd1 reste indisponible" >&2; exit 1; }
+  if ip=$(autre_primaire_ip); then break; fi
+  [ "$essai" -eq 60 ] && { echo "Aucun primaire joignable apres 2 min (config/primary.env)" >&2; exit 1; }
   sleep 2
 done
-
-# Le slot retient les WAL necessaires tant que bdd2 est arretee.
-runuser -u postgres -- env PGPASSWORD="$PG_REPL_PASSWORD" pg_basebackup \
-  -h "$BDD1_IP" -U "$PG_REPL_USER" -D "$DATA_DIR" -R -X stream \
-  -C -S resultats_bf_bdd2
-chown -R postgres:postgres "$DATA_DIR"
-systemctl start postgresql
-for essai in $(seq 1 30); do
-  runuser -u postgres -- psql -Atqc 'SELECT pg_is_in_recovery()' | grep -qx t && break
-  [ "$essai" -eq 30 ] && { echo "bdd2 n'est pas devenue une replique" >&2; exit 1; }
-  sleep 1
-done
+pg_copier_depuis "$ip"
+pg_cluster start; attendre_sql
+[ "$(sql postgres 'SELECT pg_is_in_recovery()')" = t ] || { echo "$MON_NOM n'est pas devenue une replique" >&2; exit 1; }
+pg_attendre_flux
 node_exporter
-echo "bdd2 : replique en flux de bdd1 prete"
+echo "$MON_NOM : replique en flux de $(primaire_actuel) prete"
