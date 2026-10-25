@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Répartiteur. La liste des serveurs est ENGENDRÉE depuis config/noeuds.yml.
 source /vagrant/scripts/lib.sh
+# On installe uniquement les paquets manquants, en un seul appel
 apt_installer haproxy keepalived socat curl
 
 SERVEURS=$(noeuds app | awk '{printf "    server %s %s:3000 check\n", $1, $2}')
+
+# Métriques Prometheus pour l'observabilité (extension E2), seulement si c'est possible
 PROM=""
 if extension_active e2 && haproxy -vv 2>/dev/null | grep -qi promex; then
   PROM="
@@ -13,6 +16,7 @@ frontend metriques
     no log"
 fi
 
+# On écrit la configuration HAProxy dans un FICHIER TEMPORAIRE
 NOUVEAU=$(mktemp)
 cat > "$NOUVEAU" <<EOF
 global
@@ -61,6 +65,7 @@ systemctl enable --now haproxy >/dev/null 2>&1
 # E1 : keepalived n'est configuré que s'il existe un second répartiteur
 PAIR=$(noeuds lb | awk -v me="$MON_NOM" '$1!=me {print $2}')
 if [ -n "$PAIR" ]; then
+  # Le protocole VRRP limite le mot de passe à 8 caractères
   [ "${#VRRP_PASSWORD}" -le 8 ] || { echo "ERREUR : VRRP_PASSWORD > 8 caractères" >&2; exit 1; }
   IFACE=$(ip -o -4 addr show | awk -v ip="$MON_IP" 'index($4, ip"/")==1 {print $2}')
   if [ "$MON_NOM" = lb1 ]; then ETAT=MASTER; PRIO=110; else ETAT=BACKUP; PRIO=100; fi
@@ -96,5 +101,7 @@ vrrp_instance VI_1 {
 EOF
   systemctl enable --now keepalived >/dev/null 2>&1
 fi
+
+# Installer node_exporter (métriques machine) seulement si E2 est actif
 node_exporter
 echo "$MON_NOM : $(noeuds app | wc -l) serveur(s) applicatif(s) configuré(s)"
