@@ -1,3 +1,7 @@
+<#
+V4  - RESULTATS-BF.
+Le service renvoie proprement 503 sur /sante
+#>
 $ErrorActionPreference = "Stop"
 $racine = Split-Path -Parent $PSScriptRoot
 Push-Location $racine
