@@ -1,7 +1,6 @@
 #requires -Version 5.1
 <#
 V1 - Repartition de charge RESULTATS-BF : 20 appels successifs a /info.
-Placer ce fichier dans tests/. Lancement depuis la racine : .\tests\v1.ps1
 Prerequis : plateforme demarree et repartiteur accessible.
 NB_APP est lu dans config/plateforme.env genere par Vagrant ; verifier son actualite.
 Ce script ne demarre, n'arrete et ne provisionne aucune VM.
