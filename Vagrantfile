@@ -47,15 +47,27 @@ VERSION = '202510.26.0'
 # Table NOEUDS : Chaque entrée = une machine (nom, adresse IP, mémoire en Mo, rôle)
 NOEUDS = []
  
-# Répartiteur de charge actif (HAProxy), passif et supervision (Prometheus + Grafana)
-NOEUDS << { "nom" => "lb1", "ip" => "#{RESEAU}.11", "mem" => 512, "role" => "lb" }
-NOEUDS << { "nom" => "lb2", "ip" => "#{RESEAU}.12", "mem" => 512, "role" => "lb" } if EXTENSIONS.include?('e1')
+
 
 # Bases de données (primaire + réplique) et serveurs applicatifs (NB_APP, .21 à .29)
 NOEUDS << { "nom" => "bdd1", "ip" => "#{RESEAU}.31", "mem" => 768, "role" => "bdd" }
 NOEUDS << { "nom" => "bdd2", "ip" => "#{RESEAU}.32", "mem" => 768, "role" => "replique" }
 (1..NB_APP).each do |i|
   NOEUDS << { "nom" => "app#{i}", "ip" => "#{RESEAU}.#{20 + i}", "mem" => 512, "role" => "app" }
+end
+
+# Répartiteur de charge actif (HAProxy), passif et supervision (Prometheus + Grafana)
+NOEUDS << { "nom" => "lb1", "ip" => "#{RESEAU}.11", "mem" => 512, "role" => "lb" }
+NOEUDS << { "nom" => "lb2", "ip" => "#{RESEAU}.12", "mem" => 512, "role" => "lb" } if EXTENSIONS.include?('e1')
+
+# E2 : supervision Prometheus et Grafana.
+if EXTENSIONS.include?('e2')
+  NOEUDS << {
+    "nom" => "obs",
+    "ip" => "#{RESEAU}.41",
+    "mem" => 768,
+    "role" => "obs"
+  }
 end
 
 # binwrite (et non write) : sous Windows, write ajouterait des fins de ligne CRLF
